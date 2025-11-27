@@ -123,25 +123,23 @@ jobs:
           name: app-jar
           path: ./artifact
 
-      # 2. Підготовка SSH-середовища (Має бути перед будь-яким ssh/scp)
-      - name: Prepare SSH and Host Keys
+      # 2. Підготовка SSH-середовища та встановлення залежностей
+      - name: Prepare SSH, Install Deps, and Configure Host Keys
         run: |
+          # Встановлення залежностей
+          sudo apt-get update && sudo apt-get install -y openssh-client rsync
+          
+          # Підготовка SSH
           mkdir -p ~/.ssh
-          # Додаємо приватний ключ для автентифікації
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          # Додаємо хост до відомих, щоб уникнути запиту підтвердження
           ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
 
-      # 3. Встановлення клієнтів (rsync, openssh) та оновлення
-      - name: Install Dependencies
-        run: sudo apt-get update && sudo apt-get install -y openssh-client rsync
-
-      # 4. Завантаження на сервер (scp)
+      # 3. Завантаження на сервер (scp)
       - name: Upload JAR to server
         run: scp -o StrictHostKeyChecking=no artifact/*.jar ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}
 
-      # 5. Перезапуск сервісу (виконання команд на сервері)
+      # 4. Перезапуск сервісу (виконання команд на сервері)
       - name: Restart service
         run: ssh -o StrictHostKeyChecking=no ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
           "sudo mv ${{ secrets.DEPLOY_PATH }}/*.jar /opt/java/webapps/library-app.jar && sudo systemctl restart library-app.service"
