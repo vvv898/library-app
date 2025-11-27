@@ -58,7 +58,6 @@ jobs:
     services:
       docker:
         image: docker:24-dind
-        privileged: true
         options: "--privileged --name docker"
         ports:
           - 2375:2375
@@ -132,4 +131,3 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-
