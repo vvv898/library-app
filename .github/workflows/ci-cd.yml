@@ -94,9 +94,9 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: jacoco-report
-          path: target/site/jacoco
-
+          name: jacoco-site
+          path: jacoco-site
+          
   coverage:
     name: 5. Code Coverage
     runs-on: ubuntu-latest
@@ -105,7 +105,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: jacoco-report
+          name: jacoco-site
           path: jacoco-site
       - name: OK!
         run: echo "JaCoCo report downloaded successfully"
