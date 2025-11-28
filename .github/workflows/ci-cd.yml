@@ -2,6 +2,7 @@ name: CI / CD Pipeline
 
 on:
   push:
+    :
     branches: [ '**' ]
   pull_request:
     branches: [ main ]
@@ -11,7 +12,7 @@ env:
 
 jobs:
   validate:
-    name: "1. Validate Code"
+    name: "1. Validate"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +26,7 @@ jobs:
         run: mvn -B validate
 
   unit-tests:
-    name: "2. Run Unit Tests"
+    name: "2. Unit Tests"
     runs-on: ubuntu-latest
     needs: validate
     steps:
@@ -36,8 +37,8 @@ jobs:
           distribution: temurin
           java-version: 17
           cache: maven
-      - name: Run unit tests + Surefire reports
-        run: mvn -B test -DskipITs=true
+      - name: Clean + Unit Tests
+        run: mvn -B clean test -DskipITs=true
       - name: Upload Surefire Reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -47,7 +48,7 @@ jobs:
           if-no-files-found: warn
 
   package:
-    name: "3. Package Application"
+    name: "3. Package JAR"
     runs-on: ubuntu-latest
     needs: unit-tests
     steps:
@@ -58,8 +59,8 @@ jobs:
           distribution: temurin
           java-version: 17
           cache: maven
-      - name: Build JAR (skip tests)
-        run: mvn -B -DskipTests package
+      - name: Clean + Package
+        run: mvn -B clean package -DskipTests
       - name: Upload JAR
         uses: actions/upload-artifact@v4
         with:
@@ -67,7 +68,7 @@ jobs:
           path: target/*.jar
 
   integration-tests:
-    name: "4. Run Integration Tests (Testcontainers)"
+    name: "4. Integration Tests (Testcontainers)"
     runs-on: ubuntu-latest
     needs: package
     services:
@@ -79,15 +80,13 @@ jobs:
     env:
       DOCKER_HOST: tcp://localhost:2375
       DOCKER_TLS_CERTDIR: ""
-      TESTCONTAINERS_REUSE_ENABLE: "true"  # прискорює повторні запуски
+      TESTCONTAINERS_REUSE_ENABLE: "true"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Wait for Docker daemon
+      - name: Wait for Docker
         run: |
-          for i in $(seq 1 60); do
-            docker version && break || sleep 2
-          done
+          timeout 60 bash -c 'until docker info; do sleep 2; done'
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -96,12 +95,11 @@ jobs:
           java-version: 17
           cache: maven
 
-      - name: Run integration tests + JaCoCo data
-        run: mvn -B -DskipTests=false -DskipITs=false verify
+      - name: Clean + Run Integration Tests + JaCoCo data
+        run: mvn -B clean verify
 
-      - name: Generate JaCoCo HTML report
+      - name: Generate JaCoCo HTML Report
         run: mvn -B jacoco:report
-        # Якщо у тебе мультимодульний проєкт — додай: jacoco:report-aggregate
 
       - name: Upload Failsafe Reports
         if: always()
@@ -111,35 +109,33 @@ jobs:
           path: target/failsafe-reports/
           if-no-files-found: warn
 
-      - name: Upload JaCoCo HTML Report
+      - name: Upload JaCoCo Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: jacoco-site
-          path: target/site/jacoco/          # ← правильний шлях!
-          if-no-files-found: warn
+          path: target/site/jacoco/
+          if-no-files-found: error
 
   coverage:
-    name: "5. Code Coverage Report"
+    name: "5. Code Coverage"
     runs-on: ubuntu-latest
     needs: integration-tests
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download JaCoCo report
+      - name: Download JaCoCo Report
         uses: actions/download-artifact@v4
         with:
           name: jacoco-site
-          path: jacoco-report
+          path: public/jacoco
 
-      - name: JaCoCo report ready!
+      - name: Coverage Ready
         run: |
-          echo "JaCoCo HTML report downloaded!"
-          ls -la jacoco-report/
-          echo "Open report: https://htmlpreview.github.io/?https://github.com/${{ github.repository }}/blob/${{ github.sha }}/jacoco-report/index.html"
+          echo "JaCoCo report ready!"
+          echo "Link: https://htmlpreview.github.io/?https://github.com/${{ github.repository }}/blob/${{ github.sha }}/public/jacoco/index.html"
 
-      # Опціонально: додати коментар у PR з посиланням
-      - name: Comment coverage link on PR
+      - name: Comment on PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
@@ -148,43 +144,36 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `Code Coverage Report готов!\n\n[Open JaCoCo HTML Report](${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}/jacoco-report/index.html?raw=true)`
+              body: `Code Coverage Report\n\n[Open JaCoCo Report](https://htmlpreview.github.io/?https://github.com/${{ github.repository }}/blob/${{ github.sha }}/public/jacoco/index.html)`
             })
 
   deploy:
-    name: "6. Deploy to EC2"
+    name: "6. Deploy → EC2"
     runs-on: ubuntu-latest
     needs: [package, integration-tests, coverage]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
     steps:
-      - name: Download built JAR
+      - name: Download JAR
         uses: actions/download-artifact@v4
         with:
           name: app-jar
-          path: ./artifact
+          path: artifact
 
-      - name: Install SSH tools
+      - name: Deploy to server
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          DEPLOY_HOST    : ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER    : ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH    : ${{ secrets.DEPLOY_PATH }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y openssh-client rsync
+          echo "$SSH_PRIVATE_KEY" > key.pem
+          chmod 600 key.pem
 
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+          scp -i key.pem -o StrictHostKeyChecking=no artifact/*.jar $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH
 
-      - name: Deploy JAR to server
-        run: |
-          scp -o StrictHostKeyChecking=no artifact/*.jar \
-            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}
-
-      - name: Restart service on EC2
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
-            sudo mv ${{ secrets.DEPLOY_PATH }}/*.jar /opt/java/webapps/library-app.jar
+          ssh -i key.pem -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST << 'EOF'
+            sudo mv $DEPLOY_PATH/*.jar /opt/java/webapps/library-app.jar
             sudo systemctl restart library-app.service
-            sudo systemctl status library-app.service --no-pager
+            echo "Deploy completed & service restarted"
           EOF
